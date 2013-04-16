@@ -1,0 +1,526 @@
+#!/usr/bin/env perl 
+# logtail
+# Rémi Paulmier <remi.paulmier@gmail.com>
+# read log files and inject messages into redis broker
+# messages are encoded into JSON, in the same way logstash does
+# This program needs inotify in linux kernel >= 2.6.13  
+
+use strict;
+use Event;
+use Linux::Inotify2;
+use File::Basename;
+use XML::SimpleObject::LibXML;
+use JSON;
+use Redis;
+use Log::Log4perl qw(:easy);
+Log::Log4perl->easy_init($ERROR);
+
+my %config;
+my %states;
+my %runtime;
+my $inotify;
+my $logger;
+
+sub get_event_tags {
+
+	my $e = shift;
+	my @tags;
+
+	if ($e->IN_MODIFY) {
+		push @tags, "IN_MODIFY";
+	}
+	if ($e->IN_ATTRIB) {
+		push @tags, "IN_ATTRIB";
+	}
+	if ($e->IN_CLOSE_WRITE) {
+		push @tags, "IN_CLOSE_WRITE";
+	}
+	if ($e->IN_CLOSE_NOWRITE) {
+		push @tags, "IN_CLOSE_NOWRITE";
+	}
+	if ($e->IN_OPEN) {
+		push @tags, "IN_OPEN";
+	}
+	if ($e->IN_MOVED_FROM) {
+		push @tags, "IN_MOVED_FROM";
+	}
+	if ($e->IN_MOVED_TO) {
+		push @tags, "IN_MOVED_TO";
+	}
+	if ($e->IN_CREATE) {
+		push @tags, "IN_CREATE";
+	}
+	if ($e->IN_DELETE) {
+		push @tags, "IN_DELETE";
+	}
+	if ($e->IN_DELETE_SELF) {
+		push @tags, "IN_DELETE_SELF";
+	}
+	if ($e->IN_MOVE_SELF) {
+		push @tags, "IN_MOVE_SELF";
+	}
+	if ($e->IN_ALL_EVENTS) {
+		push @tags, "IN_ALL_EVENTS";
+	}
+	if ($e->IN_ONESHOT) {
+		push @tags, "IN_ONESHOT";
+	}
+	if ($e->IN_ONLYDIR) {
+		push @tags, "IN_ONLYDIR";
+	}
+	if ($e->IN_DONT_FOLLOW) {
+		push @tags, "IN_DONT_FOLLOW";
+	}
+	if ($e->IN_MASK_ADD) {
+		push @tags, "IN_MASK_ADD";
+	}
+	if ($e->IN_CLOSE) {
+		push @tags, "IN_CLOSE";
+	}
+	if ($e->IN_MOVE) {
+		push @tags, "IN_MOVE";
+	}
+	if ($e->IN_ISDIR) {
+		push @tags, "IN_ISDIR";
+	}
+	if ($e->IN_Q_OVERFLOW) {
+		push @tags, "IN_Q_OVERFLOW";
+	}
+	if ($e->IN_UNMOUNT) {
+		push @tags, "IN_UNMOUNT";
+	}
+	if ($e->IN_IGNORED) {
+		push @tags, "IN_IGNORED";
+	}
+	if ($e->IN_ONESHOT) {
+		push @tags, "IN_ONESHOT";
+	}
+
+	return @tags;
+}
+
+#"rpush" 
+#  "logstash-syslog" 
+#  "{
+#    \"@source\":\"udp://172.16.14.1:49067/\",
+#    \"@tags\":[],
+#    \"@fields\":{},
+#    \"@timestamp\":\"2013-04-12T14:55:42.994Z\",
+#    \"@source_host\":\"172.16.14.1\",
+#    \"@source_path\":\"/\",
+#    \"@message\":\"<38>2013-04-12T16:55:30.942640+02:00 comfw1 sshd[5023]: Accepted publickey for root from 192.168.35.42 port 42370 ssh2\",
+#    \"@type\":\"syslog\"
+#  }"
+
+#"RPUSH" 
+#  "logstash-http2" 
+#  "{
+#    \"@timestamp\":\"2013-04-12T14:55:42.994Z\",
+#    \"@message\":\"coucou\",
+#    \"@type\":\"http2\"
+#  }"
+
+sub message2logstash_event {
+	my $msg = shift;
+	
+	my %ls_event = ( '@timestamp' => '2013-04-12T14:55:42.994Z',
+	                 '@type' => 'http2',
+	                 '@message' => $msg);
+	
+	return encode_json \%ls_event;
+}
+
+sub message_output {
+	my $msg = shift;
+	
+	if (!defined($runtime{redis})) {
+		$runtime{redis} = Redis->new(server => '10.10.16.5:6379',
+		                             reconnect => 60,
+		                             every => 100,
+		                             encoding => undef);
+	}
+	
+	my $redis = $runtime{redis};
+	
+	$redis->rpush("logstash-http2", message2logstash_event($msg) );
+}
+
+sub read_file {
+	my $logfile = shift;
+	my $buffer;
+	
+	# connaitre l'offset
+	my $off = $states{'logfiles'}{$logfile}{'offset'};
+	my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+	    $atime,$mtime,$ctime,$blksize,$blocks)
+	  = stat($logfile);
+	$logger->debug("stat() $logfile: size is $size, mtime is ". 
+	               scalar localtime $mtime );
+	
+	# something to read ?
+	$logger->debug("size=$size, offset=$off");
+	if ($size > $off) {
+		open LF, "<$logfile" or die "can't open $logfile";
+		seek LF, $off, 0 or die "can't seek $logfile";
+		my ($tb, $nb) = (0, 0);
+		while ( $tb < $size - $off) {
+			$nb = read LF, $buffer, 1024*1024 or 
+			  $logger->logdie("can't read from $logfile");
+			$tb += $nb;
+			$logger->debug("read $tb bytes");
+		}
+		close LF or die "can't close $logfile";
+		$states{'logfiles'}{$logfile}{'offset'} += $tb;
+	} else {
+		$logger->debug("NOTHING TO READ");
+	}
+	
+	map { message_output($_) } split /\n/, $buffer;
+}
+
+sub watch_callback {
+	my $e = shift;
+
+	# event
+	if ($logger->is_debug()) {
+		$logger->debug("Event name: " . $e->name);
+		$logger->debug("Event fullname: ". $e->fullname);
+		$logger->debug("Event cookie: ". $e->cookie);
+	}
+		               
+	# get event name
+	my @tags = get_event_tags($e);
+	if ($logger->is_debug()) {
+		my $seq = int(rand(100));
+		map { $logger->debug("$seq: $_"); } @tags
+	}
+	
+	if ($e->IN_CREATE) {
+		# an object has ben created in a dir
+		if (!$e->IN_ISDIR) {
+			# si c'est pas un répertoire, veux-t-on le surveiller ? 
+			if (exists $config{'logfiles'}{$e->fullname}) {
+				$logger->debug("we want to watch this file");
+				
+				# first init its state
+				$states{'logfiles'}{$e->fullname}{'offset'} = 0;
+
+				# then consume it
+				read_file($e->fullname);
+				
+				# then add a watcher on file
+				if (!$inotify->watch ($e->fullname, 
+				                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
+				                      IN_ALL_EVENTS,
+				                      \&watch_callback)) {
+					$logger->warn("can't add watcher on ".$e->fullname);
+				}
+			}
+		}
+	}
+
+	if ($e->IN_DELETE_SELF) {
+		# an object has been removed
+		if (!$e->IN_ISDIR) {
+			# si c'est pas un répertoire, veux-t-on le surveiller ? 
+			if (exists $config{'logfiles'}{$e->fullname}) {
+				$logger->debug("this file was supposed to be watched,"
+				               . " cancel it");
+				$e->w->cancel();
+			}
+		}
+	}
+	
+	if ($e->IN_MODIFY) {
+		# an object has ben modified in a dir
+		if (!$e->IN_ISDIR && $e->name eq "") {
+			# si c'est pas un répertoire, veux-t-on le surveiller ? 
+			# et que le watcher est bien celui du fichier
+			if (exists $config{'logfiles'}{$e->fullname}) {
+				$logger->debug("we watch this file, read it !");
+				# lire le fichier
+				read_file($e->fullname);
+			}
+		}
+	}
+
+	if ($e->IN_MOVED_FROM) {
+		# an object potentially watched has been moved
+		if (!$e->IN_ISDIR) {
+			# si c'est pas un répertoire, veut-on le surveiller ? 
+			if (exists $config{'logfiles'}{$e->fullname}) {
+				my $logfile = $e->fullname;
+				my $vhost = $config{logfiles}{$e->fullname}{vhost};
+				my $prev = $config{vhosts}{$vhost}{prev};
+
+				# le fichier bougé est-il le précédent ?
+				if ( $prev eq $logfile ) {
+					# oui => on ne fait rien
+				} else {
+					# non, on initialise le state du prev
+					# qui sera watché dans le MOVED_TO
+					$states{logfiles}{$prev}{offset} = 
+					  $states{logfiles}{$logfile}{offset};
+				}
+			}
+		}
+	}
+	
+	if ($e->IN_MOVED_TO) {
+		# an object has ben moved to an object potentially watched
+		if (!$e->IN_ISDIR) {
+			# si c'est pas un répertoire, veux-t-on le surveiller ? 
+			if (exists $config{'logfiles'}{$e->fullname}) {
+
+				# first consume
+				read_file($e->fullname);
+				
+				# then add a watcher on file
+				if (!$inotify->watch ($e->fullname, 
+				                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
+				                      IN_ALL_EVENTS,
+				                      \&watch_callback)) {
+					$logger->warn("can't add watcher on ".$e->fullname);
+				}
+			}
+		}
+	}
+}
+
+# lit la conf depuis un fichier XML
+sub readXMLConf {
+	my ($configFile) = @_;
+	if(! -f $configFile) {
+		$logger->logdie("can't read $configFile");
+	}
+	my $parser = new XML::LibXML;
+	open(CF,"<$configFile");
+	if(<CF> =~ /^<\?xml/) {
+		$parser->validation(1);
+	}
+	else {
+		$logger->logdie("Please use DTD for xml validation!");
+		$parser->validation(0);
+	}
+	close(CF);
+	my $xmlobj = new XML::SimpleObject::LibXML($parser->
+	                                           parse_file("$configFile"));
+	my $logfiles = $xmlobj->child("config")->child("logfiles");
+	
+	foreach my $logfile ($logfiles->children("logfile")) {
+		my $path = $logfile->attribute("path");
+		my $vhost = $logfile->attribute("vhost");
+		my $prev = $logfile->attribute("prev");
+		
+		$config{"vhosts"}{$vhost}{'path'} = $path;
+		$config{"vhosts"}{$vhost}{'prev'} = $prev;
+		$logger->debug($vhost);
+		$logger->debug("  ".$config{"vhosts"}{$vhost}{'path'});
+		$logger->debug("  ".$config{"vhosts"}{$vhost}{'prev'});
+
+		$config{"logfiles"}{$path}{'vhost'} = $vhost;
+		$config{"logfiles"}{$prev}{'vhost'} = $vhost;
+	}
+}
+
+# initialize les states aux valeurs par défaut
+sub initStates {
+	foreach my $logfile (keys $config{"logfiles"}) {
+		
+		# IF BEGIN OR END
+		# BEGIN : $states{'logfiles'}{$logfile}{"inode"} = -1;
+		# $states{'logfiles'}{$logfile}{"offset"} = 0;
+		# END: depend si le fichier existe ou pas. S'il existe, on se cale 
+		# à la fin
+		my ($ino, $size);
+		
+		(undef,
+		 $ino,
+		 undef,undef,undef,undef,undef,
+		 $size,
+		 undef, undef, undef, undef, undef) 
+		  = stat($logfile) or sub {
+			  $size = 0;
+			  $ino = -1;
+		  };
+		
+		$states{'logfiles'}{$logfile}{"inode"} = $ino;
+		$states{'logfiles'}{$logfile}{"offset"} = $size;
+	}
+}
+
+# lire les states depuis xml
+sub readXMLStates {
+	
+	my ($statesFile) = @_;
+	if(! -f $statesFile) {
+		$logger->warn("can't read $statesFile");
+		return;
+	}
+	
+	my $parser = new XML::LibXML;
+	open(SF,"<$statesFile");
+	if(<SF> =~ /^<\?xml/) {
+		$parser->validation(1);
+	}
+	else {
+		$logger->error("Please use DTD for xml validation!");
+		$parser->validation(0);
+	}
+	close(SF);
+	my $xmlobj = new XML::SimpleObject::LibXML($parser->
+	                                           parse_file("$statesFile"));
+	my $states = $xmlobj->child("states");
+	
+	foreach my $logfile ($states->children("logfile")) {
+		my $path = $logfile->attribute("path");
+		my $inode = $logfile->attribute("inode");
+		my $offset = $logfile->attribute("offset");
+		
+		$states{"logfiles"}{$path}{'offset'} = $offset;
+		$states{"logfiles"}{$path}{'inode'} = $inode;
+
+		$logger->debug($path);
+		$logger->debug("  ".$states{"logfiles"}{$path}{'offset'});
+		$logger->debug("  ".$states{"logfiles"}{$path}{'inode'});
+	}
+}
+
+# ecrire les states dans statefile.xml
+sub writeXMLStates {
+
+	my ($statesFile) = @_;
+
+	$logger->debug("writing states to XML file");
+	
+	# pour chaque fichier surveillé répondant au pattern
+	# ecrire le nom du fichier et l'offset de la dernière lecture
+	
+	my $dom = XML::LibXML::Document->new('1.0');
+	
+	# set DTD <!DOCTYPE states SYSTEM "/etc/logtail/logtail-states.dtd" >
+	$dom->createInternalSubset("states", undef,
+	                           "/etc/logtail/logtail-states.dtd");
+
+	my $statesElement = $dom->createElement("states");
+	$dom->addChild($statesElement);
+
+	
+	foreach my $logfile (keys $config{'logfiles'}) {
+		my $logElement = $dom->createElement("logfile");
+		
+		$logElement->addChild( $dom->createAttribute("path", $logfile) );
+		$logElement->addChild( $dom->createAttribute("inode", 
+		                                             $states{'logfiles'}
+		                                             {$logfile}{'inode'}) );
+		$logElement->addChild( $dom->createAttribute("offset", 
+		                                             $states{'logfiles'}
+		                                             {$logfile}{'offset'}) );
+		$statesElement->addChild($logElement);
+	}
+
+	if (!$dom->is_valid()) {
+		$logger->warn("document is not valid!");
+	} else {
+	
+		# save
+		open SF, ">$statesFile";
+		binmode SF; 
+		print SF $dom->toString();
+		close SF;
+	}
+}
+
+###################### STARTUP ##########################
+
+# logger init, always success
+my $logconf = q(
+log4perl.category.logtail		= ERROR, stderr
+
+log4perl.appender.stderr		= Log::Log4perl::Appender::Screen
+log4perl.appender.stderr.stderr = 1
+log4perl.appender.stderr.layout	= Log::Log4perl::Layout::SimpleLayout
+);
+Log::Log4perl::init( \$logconf);
+$logger = Log::Log4perl::get_logger('logtail');
+
+# then,  tries to init log4perl from hardcoded conffile
+Log::Log4perl::init( "/etc/logtail/log4perl.conf") or 
+  $logger->logdie("can't read log4perl conf");
+
+# logger is OK, let's start !
+$logger->warn("logtail v0.1 starting");
+
+# read config
+readXMLConf("/etc/logtail/logtail-config.xml");
+
+initStates();
+readXMLStates("/etc/logtail/logtail-states.xml");
+
+# add watched files
+$inotify = new Linux::Inotify2;
+foreach my $vhost (keys $config{'vhosts'}) {
+	# first consume all the file if size has changed
+	read_file($config{vhosts}{$vhost}{path});
+	if (!$inotify->watch ($config{vhosts}{$vhost}{path}, 
+	                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
+	                      IN_ALL_EVENTS,
+	                      \&watch_callback)) {
+		$logger->warn("can't add watcher on ".$config{vhosts}
+		              {$vhost}{path} );
+	}
+
+	if (!$inotify->watch ($config{vhosts}{$vhost}{prev}, 
+	                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
+	                      IN_ALL_EVENTS,
+	                      \&watch_callback)) {
+		$logger->warn("can't add watcher on ".$config{'vhosts'}
+		              {$vhost}{prev} );
+	}
+	
+	# add a watcher on the container directory too
+	my $dir = dirname($config{'vhosts'}{$vhost}{'path'});
+	if (!$inotify->watch ($dir, 
+	                      #IN_ALL_EVENTS,
+	                      IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM,
+	                      \&watch_callback)) {
+		warn "can't add watcher on ".$dir ."\n";
+	}
+}
+
+# catch events from Inotify
+Event->io (fd => $inotify->fileno, poll => 'r', cb => sub { $inotify->poll });
+
+# catch some signals
+Event->signal (signal => 'HUP',
+               cb => sub {
+	               $logger->warn("SIGHUP received");
+	               while (my ($key, $watch) = each (%{$inotify->{'w'}})) {
+		               $watch->cancel;
+	               }
+               });
+Event->signal (signal => 'INT',
+               cb => sub {
+	               $logger->warn("SIGINT received");
+	               while (my ($key, $watch) = each (%{$inotify->{'w'}})) {
+		               $watch->cancel;
+	               }
+	               
+	               Event::unloop_all(1);
+               });
+Event->signal (signal => 'TERM',
+               cb => sub {
+	               $logger->warn("SIGTERM received");
+	               while (my ($key, $watch) = each (%{$inotify->{'w'}})) {
+		               $watch->cancel;
+	               }
+	               
+	               Event::unloop_all(1);
+               });
+# main loop
+Event::loop;
+
+# loop was interrupted, ready to exit
+writeXMLStates("/etc/logtail/logtail-states.xml");
+exit(0);
+
