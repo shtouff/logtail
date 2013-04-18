@@ -7,6 +7,7 @@
 
 use strict;
 use Event;
+use Sys::Hostname;
 use Linux::Inotify2;
 use File::Basename;
 use XML::SimpleObject::LibXML;
@@ -111,7 +112,10 @@ sub message2logstash_event {
 	my %ls_event = ( '@timestamp' => $dt->iso8601(),
 	                 '@type' => $config{vhosts}{$vhost}{type},
 	                 '@vhost' => $vhost,
-	                 '@message' => $msg);
+	                 '@message' => $msg,
+	                 '@source_host' => $runtime{hostname},
+	                 '@source_path' => $config{vhosts}{$vhost}{path}
+	               );
 	
 	return encode_json \%ls_event;
 }
@@ -461,6 +465,9 @@ readXMLConf(CONFDIR . "/config.xml");
 
 initStates();
 readXMLStates(CONFDIR . "/states.xml");
+
+# init hostname
+$runtime{hostname} = hostname;
 
 # add watched files
 $inotify = new Linux::Inotify2;
