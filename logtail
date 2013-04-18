@@ -104,12 +104,13 @@ sub get_event_tags {
 
 sub message2logstash_event {
 	my $msg = shift;
+	my $vhost = shift;
 	
-
 	my $ltz = DateTime::TimeZone->new( name => 'UTC' );
 	my $dt = DateTime->now(time_zone => $ltz);
 	my %ls_event = ( '@timestamp' => $dt->iso8601(),
 	                 '@type' => 'http2',
+	                 '@vhost' => $vhost,
 	                 '@message' => $msg);
 	
 	return encode_json \%ls_event;
@@ -117,6 +118,7 @@ sub message2logstash_event {
 
 sub message_output {
 	my $msg = shift;
+	my $vhost = shift;
 	
 	if (!defined($runtime{redis})) {
 
@@ -135,7 +137,7 @@ sub message_output {
 	my $redis = $runtime{redis};
 	my $key = $config{broker}{key};
 	
-	$redis->rpush($key, message2logstash_event($msg) );
+	$redis->rpush($key, message2logstash_event($msg, $vhost) );
 }
 
 sub read_file {
@@ -168,7 +170,7 @@ sub read_file {
 		$logger->debug("NOTHING TO READ");
 	}
 	
-	map { message_output($_) } split /\n/, $buffer;
+	map { message_output($_, $config{logfiles}{$logfile}{vhost}) } split /\n/, $buffer;
 }
 
 sub watch_callback {
