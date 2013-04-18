@@ -12,6 +12,7 @@ use File::Basename;
 use XML::SimpleObject::LibXML;
 use JSON;
 use Redis;
+use DateTime;
 use Log::Log4perl qw(:easy);
 Log::Log4perl->easy_init($ERROR);
 
@@ -104,7 +105,10 @@ sub get_event_tags {
 sub message2logstash_event {
 	my $msg = shift;
 	
-	my %ls_event = ( '@timestamp' => '2013-04-12T14:55:42.994Z',
+
+	my $ltz = DateTime::TimeZone->new( name => 'UTC' );
+	my $dt = DateTime->now(time_zone => $ltz);
+	my %ls_event = ( '@timestamp' => $dt->iso8601(),
 	                 '@type' => 'http2',
 	                 '@message' => $msg);
 	
