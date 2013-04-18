@@ -21,6 +21,8 @@ my %runtime;
 my $inotify;
 my $logger;
 
+use constant CONFDIR => "/home/remi/github/logtail/conf";
+
 sub get_event_tags {
 
 	my $e = shift;
@@ -400,7 +402,7 @@ sub writeXMLStates {
 	
 	# set DTD <!DOCTYPE states SYSTEM "/etc/logtail/logtail-states.dtd" >
 	$dom->createInternalSubset("states", undef,
-	                           "/etc/logtail/logtail-states.dtd");
+	                           "states.dtd");
 
 	my $statesElement = $dom->createElement("states");
 	$dom->addChild($statesElement);
@@ -445,17 +447,17 @@ Log::Log4perl::init( \$logconf);
 $logger = Log::Log4perl::get_logger('logtail');
 
 # then,  tries to init log4perl from hardcoded conffile
-Log::Log4perl::init( "/etc/logtail/log4perl.conf") or 
+Log::Log4perl::init( CONFDIR . "/log4perl.conf") or 
   $logger->logdie("can't read log4perl conf");
 
 # logger is OK, let's start !
 $logger->warn("logtail v0.1 starting");
 
 # read config
-readXMLConf("/etc/logtail/logtail-config.xml");
+readXMLConf(CONFDIR . "/config.xml");
 
 initStates();
-readXMLStates("/etc/logtail/logtail-states.xml");
+readXMLStates(CONFDIR . "/states.xml");
 
 # add watched files
 $inotify = new Linux::Inotify2;
