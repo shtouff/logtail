@@ -330,7 +330,7 @@ sub readXMLConf {
 
 # initialize les states aux valeurs par défaut
 sub initStates {
-	foreach my $logfile (keys $config{"logfiles"}) {
+	foreach my $logfile (keys %{$config{"logfiles"}}) {
 		
 		# IF BEGIN OR END
 		# BEGIN : $states{'logfiles'}{$logfile}{"inode"} = -1;
@@ -411,7 +411,7 @@ sub writeXMLStates {
 	$dom->addChild($statesElement);
 
 	
-	foreach my $logfile (keys $config{'logfiles'}) {
+	foreach my $logfile (keys %{$config{'logfiles'}}) {
 		$logger->debug("writing state for $logfile");
 		my $logElement = $dom->createElement("logfile");
 		
@@ -464,7 +464,7 @@ readXMLStates(CONFDIR . "/states.xml");
 
 # add watched files
 $inotify = new Linux::Inotify2;
-foreach my $vhost (keys $config{'vhosts'}) {
+foreach my $vhost (keys %{$config{'vhosts'}}) {
 	# first consume all the file if size has changed
 	read_file($config{vhosts}{$vhost}{path});
 	if (!$inotify->watch ($config{vhosts}{$vhost}{path}, 
