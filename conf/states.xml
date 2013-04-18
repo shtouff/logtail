@@ -1,3 +1,0 @@
-<?xml version="1.0"?>
-<!DOCTYPE states SYSTEM "/home/remi/github/logtail/conf/states.dtd">
-<states><logfile path="/home/remi/github/logtail/logs/local3.log" inode="402849455" offset="646"/><logfile path="/home/remi/github/logtail/logs/local4.log.1" inode="404774315" offset="644"/><logfile path="/home/remi/github/logtail/logs/local3.log.1" inode="405529119" offset="76"/><logfile path="/home/remi/github/logtail/logs/local4.log" inode="402952679" offset="83"/></states>
