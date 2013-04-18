@@ -129,8 +129,9 @@ sub message_output {
 	}
 	
 	my $redis = $runtime{redis};
+	my $key = $config{broker}{key};
 	
-	$redis->rpush("logstash-http2", message2logstash_event($msg) );
+	$redis->rpush($key, message2logstash_event($msg) );
 }
 
 sub read_file {
@@ -298,6 +299,7 @@ sub readXMLConf {
 	$config{broker}{host} = $broker->attribute("host");
 	$config{broker}{port} = $broker->attribute("port");
 	$config{broker}{db} = $broker->attribute("db");
+	$config{broker}{key} = $broker->attribute("key");
 	
 	my $logfiles = $xmlobj->child("config")->child("logfiles");
 	

@@ -4,6 +4,7 @@
   host	CDATA #REQUIRED
   port	CDATA "6379"
   db	CDATA "0"
+  key	CDATA "logstash-http"
 >
 <!ELEMENT logfiles (logfile+)>
 <!ELEMENT logfile (#PCDATA)>
