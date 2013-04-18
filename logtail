@@ -114,7 +114,7 @@ sub message2logstash_event {
 	                 '@vhost' => $vhost,
 	                 '@message' => $msg,
 	                 '@source_host' => $runtime{hostname},
-	                 '@source_path' => $config{vhosts}{$vhost}{path}
+	                 '@source' => 'file://' . $config{vhosts}{$vhost}{path}
 	               );
 	
 	return encode_json \%ls_event;
