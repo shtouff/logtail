@@ -1,10 +1,12 @@
 <?xml version="1.0" ?>
 <!DOCTYPE config SYSTEM "config.dtd" >
 <config>
-  <logger path="/tmp/logtail.log" level="INFO"/>
+  <broker host="10.10.16.5" port="6379" db="0"/>
   <logfiles>
     <logfile vhost="local3" path="/home/remi/github/logtail/logs/local3.log" prev="/home/remi/github/logtail/logs/local3.log.1"/>
     <logfile vhost="local4" path="/home/remi/github/logtail/logs/local4.log" prev="/home/remi/github/logtail/logs/local4.log.1"/>
   </logfiles>
 </config>
+
+
 
