@@ -11,7 +11,7 @@ use Linux::Inotify2;
 use File::Basename;
 use XML::SimpleObject::LibXML;
 use JSON;
-use Redis;
+use Redis 1.951; 
 use DateTime;
 use Log::Log4perl qw(:easy);
 Log::Log4perl->easy_init($ERROR);
