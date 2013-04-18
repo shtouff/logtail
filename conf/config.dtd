@@ -12,4 +12,5 @@
   vhost  CDATA #REQUIRED
   path   CDATA #REQUIRED
   prev   CDATA #REQUIRED
+  type   CDATA #REQUIRED
 >

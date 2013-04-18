@@ -3,8 +3,8 @@
 <config>
   <broker host="127.0.0.1" port="6379" db="0" key="logstash-http" />
   <logfiles>
-    <logfile vhost="local3" path="/home/remi/github/logtail/logs/local3.log" prev="/home/remi/github/logtail/logs/local3.log.1"/>
-    <logfile vhost="local4" path="/home/remi/github/logtail/logs/local4.log" prev="/home/remi/github/logtail/logs/local4.log.1"/>
+    <logfile vhost="local3" path="/var/log/local3.log" prev="/var/log/local3.log.1" type="http"/>
+    <logfile vhost="local4" path="/var/log/local4.log" prev="/var/log/local4.log.1" type="http"/>
   </logfiles>
 </config>
 

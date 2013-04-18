@@ -109,7 +109,7 @@ sub message2logstash_event {
 	my $ltz = DateTime::TimeZone->new( name => 'UTC' );
 	my $dt = DateTime->now(time_zone => $ltz);
 	my %ls_event = ( '@timestamp' => $dt->iso8601(),
-	                 '@type' => 'http2',
+	                 '@type' => $config{vhosts}{$vhost}{type},
 	                 '@vhost' => $vhost,
 	                 '@message' => $msg);
 	
@@ -121,7 +121,7 @@ sub message_output {
 	my $vhost = shift;
 	
 	if (!defined($runtime{redis})) {
-
+		
 		$logger->debug("first connecting to redis broker: " .
 		               $config{broker}{host} . ":" .
 		               $config{broker}{port}
@@ -313,12 +313,15 @@ sub readXMLConf {
 		my $path = $logfile->attribute("path");
 		my $vhost = $logfile->attribute("vhost");
 		my $prev = $logfile->attribute("prev");
+		my $type = $logfile->attribute("type");
 		
 		$config{"vhosts"}{$vhost}{'path'} = $path;
 		$config{"vhosts"}{$vhost}{'prev'} = $prev;
+		$config{"vhosts"}{$vhost}{'type'} = $type;
 		$logger->debug($vhost);
 		$logger->debug("  ".$config{"vhosts"}{$vhost}{'path'});
 		$logger->debug("  ".$config{"vhosts"}{$vhost}{'prev'});
+		$logger->debug("  ".$config{"vhosts"}{$vhost}{'type'});
 
 		$config{"logfiles"}{$path}{'vhost'} = $vhost;
 		$config{"logfiles"}{$prev}{'vhost'} = $vhost;
