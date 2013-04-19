@@ -111,9 +111,9 @@ sub message2logstash_event {
 	my $dt = DateTime->now(time_zone => $ltz);
 	my %ls_event = ( '@timestamp' => $dt->iso8601(),
 	                 '@type' => $config{vhosts}{$vhost}{type},
-	                 '@vhost' => $vhost,
 	                 '@message' => $msg,
 	                 '@source_host' => $runtime{hostname},
+	                 '@source_path' => $vhost,
 	                 '@source' => 'file://' . $config{vhosts}{$vhost}{path}
 	               );
 	
