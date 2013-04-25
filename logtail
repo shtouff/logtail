@@ -7,7 +7,6 @@
 
 use strict;
 use Event;
-use Time::HiRes qw(nanosleep);
 use Sys::Hostname;
 use Linux::Inotify2;
 use File::Basename;
@@ -105,8 +104,8 @@ sub get_event_tags {
 }
 
 sub message2logstash_event {
-	my $msg = shift;
 	my $vhost = shift;
+	my $msg = shift;
 	
 	my $ltz = DateTime::TimeZone->new( name => 'UTC' );
 	my $dt = DateTime->now(time_zone => $ltz);
@@ -121,28 +120,38 @@ sub message2logstash_event {
 	return encode_json \%ls_event;
 }
 
-sub message_output {
-	my $msg = shift;
-	my $vhost = shift;
-	
+sub redis_connect {
 	if (!defined($runtime{redis})) {
 		
 		$logger->debug("first connecting to redis broker: " .
 		               $config{broker}{host} . ":" .
 		               $config{broker}{port}
-		               );
+		              );
 		
-		$runtime{redis} = Redis->new(server => $config{broker}{host}.':'.$config{broker}{port},
+		$runtime{redis} = Redis->new(server => $config{broker}{host}.':'.
+		                             $config{broker}{port},
 		                             reconnect => 60,
 		                             every => 100,
 		                             encoding => undef);
 		$runtime{redis}->select($config{broker}{db});
 	}
+}
+
+sub redis_output {
+	my @msgs = @_;
+	my $chunksize = 50;
+	
+	&redis_connect;
 	
 	my $redis = $runtime{redis};
 	my $key = $config{broker}{key};
-	
-	$redis->rpush($key, message2logstash_event($msg, $vhost) );
+
+	# split @msgs in chunks of fixed number of elements
+	$logger->debug("msgs is ".scalar(@msgs) ." long");
+	while (scalar(@msgs) > $chunksize) {
+		$redis->rpush($key, splice(@msgs, 0, $chunksize));
+	}
+	$redis->rpush($key, @msgs);
 }
 
 sub read_file {
@@ -175,23 +184,19 @@ sub read_file {
 		$logger->debug("NOTHING TO READ");
 	}
 	
-	map {
-		# if message does not begin with ip address, drop it with WARN,
-		# since ES won't be able to index it due to mapping;
-
-		# every 1000 messages, 
-		# - sleeps a while, giving a chance to handle
-		#   signal handlers (INT & TERM mainly)
-		# - call write
-		if ($runtime{msgcount}++ > 1000) {
-			$logger->debug("sleeping a while");
-			nanosleep(200000000);
-			$runtime{msgcount} = 0;
-			writeXMLStates(CONFDIR ."/states.xml");
-		}
-		
-		message_output($_, $config{logfiles}{$logfile}{vhost});
-	} split /\n/, $buffer;
+	# bulk send
+	
+	# XXX
+	# if message does not begin with ip address, drop it with WARN,
+	# since ES won't be able to index it due to strict mapping;
+	
+	my @msgs = split /\n/, $buffer;
+	my @json_msgs = map {message2logstash_event($config{logfiles}
+	                                            {$logfile}{vhost},
+	                                            $_) } @msgs;
+	if (scalar (@json_msgs) > 0) {
+		redis_output(@json_msgs);
+	}
 }
 
 sub watch_callback {
@@ -212,92 +217,66 @@ sub watch_callback {
 	}
 	
 	if ($e->IN_CREATE) {
-		# an object has ben created in a dir
-		if (!$e->IN_ISDIR) {
-			# si c'est pas un répertoire, veux-t-on le surveiller ? 
-			if (exists $config{'logfiles'}{$e->fullname}) {
-				$logger->debug("we want to watch this file");
-				
-				# first init its state
-				$states{'logfiles'}{$e->fullname}{'offset'} = 0;
-
-				# then consume it
-				read_file($e->fullname);
-				
-				# then add a watcher on file
-				if (!$inotify->watch ($e->fullname, 
-				                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
-				                      IN_ALL_EVENTS,
-				                      \&watch_callback)) {
-					$logger->warn("can't add watcher on ".$e->fullname);
-				}
-			}
-		}
-	}
-
-	if ($e->IN_DELETE_SELF) {
-		# an object has been removed
-		if (!$e->IN_ISDIR) {
-			# si c'est pas un répertoire, veux-t-on le surveiller ? 
-			if (exists $config{'logfiles'}{$e->fullname}) {
-				$logger->debug("this file was supposed to be watched,"
-				               . " cancel it");
-				$e->w->cancel();
+		# an object has ben created in this watched dir
+		if (exists $config{'logfiles'}{$e->fullname}) {
+			$logger->debug("we want to watch this file");
+			
+			# first init its state
+			$states{'logfiles'}{$e->fullname}{'offset'} = 0;
+			
+			# then consume it
+			read_file($e->fullname);
+			
+			# then add a watcher on file
+			if (!$inotify->watch ($e->fullname, 
+			                      IN_DELETE_SELF,
+			                      \&watch_callback)) {
+				$logger->warn("can't add watcher on ".$e->fullname);
 			}
 		}
 	}
 	
-	if ($e->IN_MODIFY) {
-		# an object has ben modified in a dir
-		if (!$e->IN_ISDIR && $e->name eq "") {
-			# si c'est pas un répertoire, veux-t-on le surveiller ? 
-			# et que le watcher est bien celui du fichier
-			if (exists $config{'logfiles'}{$e->fullname}) {
-				$logger->debug("we watch this file, read it !");
-				# lire le fichier
-				read_file($e->fullname);
-			}
+	if ($e->IN_DELETE_SELF) {
+		# this watched object has been removed
+		# si c'est pas un répertoire, veux-t-on le surveiller ? 
+		if (exists $config{'logfiles'}{$e->fullname}) {
+			$logger->debug("this file was supposed to be watched,"
+			               . " cancel it");
+			$e->w->cancel();
 		}
 	}
-
+	
 	if ($e->IN_MOVED_FROM) {
-		# an object potentially watched has been moved
-		if (!$e->IN_ISDIR) {
-			# si c'est pas un répertoire, veut-on le surveiller ? 
-			if (exists $config{'logfiles'}{$e->fullname}) {
-				my $logfile = $e->fullname;
-				my $vhost = $config{logfiles}{$e->fullname}{vhost};
-				my $prev = $config{vhosts}{$vhost}{prev};
-
-				# le fichier bougé est-il le précédent ?
-				if ( $prev eq $logfile ) {
-					# oui => on ne fait rien
-				} else {
-					# non, on initialise le state du prev
-					# qui sera watché dans le MOVED_TO
-					$states{logfiles}{$prev}{offset} = 
-					  $states{logfiles}{$logfile}{offset};
-				}
+		# an object has been moved in this watched dir
+		if (exists $config{'logfiles'}{$e->fullname}) {
+			my $logfile = $e->fullname;
+			my $vhost = $config{logfiles}{$e->fullname}{vhost};
+			my $prev = $config{vhosts}{$vhost}{prev};
+			
+			# le fichier bougé est-il le précédent ?
+			if ( $prev eq $logfile ) {
+				# oui => on ne fait rien
+			} else {
+				# non, on initialise le state du prev
+				# qui sera watché dans le MOVED_TO
+				$states{logfiles}{$prev}{offset} = 
+				  $states{logfiles}{$logfile}{offset};
 			}
 		}
 	}
 	
 	if ($e->IN_MOVED_TO) {
-		# an object has ben moved to an object potentially watched
-		if (!$e->IN_ISDIR) {
-			# si c'est pas un répertoire, veux-t-on le surveiller ? 
-			if (exists $config{'logfiles'}{$e->fullname}) {
-
-				# first consume
-				read_file($e->fullname);
-				
-				# then add a watcher on file
-				if (!$inotify->watch ($e->fullname, 
-				                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
-				                      IN_ALL_EVENTS,
-				                      \&watch_callback)) {
-					$logger->warn("can't add watcher on ".$e->fullname);
-				}
+		# an object has ben moved in this watched dir
+		if (exists $config{'logfiles'}{$e->fullname}) {
+			
+			# first consume
+			read_file($e->fullname);
+			
+			# then add a watcher on file
+			if (!$inotify->watch ($e->fullname, 
+			                      IN_DELETE_SELF,
+			                      \&watch_callback)) {
+				$logger->warn("can't add watcher on ".$e->fullname);
 			}
 		}
 	}
@@ -492,19 +471,15 @@ $runtime{msgcount} = 0;
 # add watched files
 $inotify = new Linux::Inotify2;
 foreach my $vhost (keys %{$config{'vhosts'}}) {
-	# first consume all the file if size has changed
-	read_file($config{vhosts}{$vhost}{path});
 	if (!$inotify->watch ($config{vhosts}{$vhost}{path}, 
-	                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
-	                      IN_ALL_EVENTS,
+	                      IN_DELETE_SELF,
 	                      \&watch_callback)) {
 		$logger->warn("can't add watcher on ".$config{vhosts}
 		              {$vhost}{path} );
 	}
 
 	if (!$inotify->watch ($config{vhosts}{$vhost}{prev}, 
-	                      #IN_DELETE_SELF | IN_MODIFY | IN_CLOSE,
-	                      IN_ALL_EVENTS,
+	                      IN_DELETE_SELF,
 	                      \&watch_callback)) {
 		$logger->warn("can't add watcher on ".$config{'vhosts'}
 		              {$vhost}{prev} );
@@ -513,7 +488,6 @@ foreach my $vhost (keys %{$config{'vhosts'}}) {
 	# add a watcher on the container directory too
 	my $dir = dirname($config{'vhosts'}{$vhost}{'path'});
 	if (!$inotify->watch ($dir, 
-	                      #IN_ALL_EVENTS,
 	                      IN_CREATE | IN_MOVED_TO | IN_MOVED_FROM,
 	                      \&watch_callback)) {
 		$logger->warn("can't add watcher on ".$dir);
@@ -539,6 +513,8 @@ Event->signal (signal => 'INT',
 	               }
 	               
 	               Event::unloop_all(1);
+
+	               $runtime{shouldstop} = 1;
                });
 Event->signal (signal => 'TERM',
                cb => sub {
@@ -550,9 +526,19 @@ Event->signal (signal => 'TERM',
 	               Event::unloop_all(1);
                });
 # main loop
-Event::loop;
+while (! defined($runtime{shouldstop})) {
+	# first try to intercept file moves
+	Event::loop(1);
+	
+	# then catch content of modified files
+	foreach my $vhost (keys %{$config{'vhosts'}}) {
+		# consume all the file if size has changed
+		read_file($config{vhosts}{$vhost}{path});
+	}
 
-# loop was interrupted, ready to exit
-writeXMLStates(CONFDIR ."/states.xml");
+	# write states
+	writeXMLStates(CONFDIR ."/states.xml");
+}
+
 exit(0);
 
