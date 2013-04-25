@@ -7,6 +7,7 @@
 
 use strict;
 use Event;
+use Time::HiRes qw(nanosleep);
 use Sys::Hostname;
 use Linux::Inotify2;
 use File::Basename;
@@ -174,7 +175,23 @@ sub read_file {
 		$logger->debug("NOTHING TO READ");
 	}
 	
-	map { message_output($_, $config{logfiles}{$logfile}{vhost}) } split /\n/, $buffer;
+	map {
+		# if message does not begin with ip address, drop it with WARN,
+		# since ES won't be able to index it due to mapping;
+
+		# every 1000 messages, 
+		# - sleeps a while, giving a chance to handle
+		#   signal handlers (INT & TERM mainly)
+		# - call write
+		if ($runtime{msgcount}++ > 1000) {
+			$logger->debug("sleeping a while");
+			nanosleep(200000000);
+			$runtime{msgcount} = 0;
+			writeXMLStates(CONFDIR ."/states.xml");
+		}
+		
+		message_output($_, $config{logfiles}{$logfile}{vhost});
+	} split /\n/, $buffer;
 }
 
 sub watch_callback {
@@ -468,6 +485,9 @@ readXMLStates(CONFDIR . "/states.xml");
 
 # init hostname
 $runtime{hostname} = hostname;
+
+# init msgcount
+$runtime{msgcount} = 0;
 
 # add watched files
 $inotify = new Linux::Inotify2;
