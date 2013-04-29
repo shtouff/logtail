@@ -551,6 +551,8 @@ Event->signal (signal => 'TERM',
 	               }
 	               
 	               Event::unloop_all(1);
+
+	               $runtime{shouldstop} = 1;
                });
 # main loop
 while (! defined($runtime{shouldstop})) {
