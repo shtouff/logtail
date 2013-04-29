@@ -16,15 +16,20 @@ use JSON;
 use Redis 1.951; 
 use DateTime;
 use Log::Log4perl qw(:easy);
+use Getopt::Std;
 Log::Log4perl->easy_init($ERROR);
 
 my %config;
 my %states;
 my %runtime;
+my %options;
 my $inotify;
 my $logger;
 
-use constant CONFDIR => "/home/remi/github/logtail/conf";
+my $PROGRAM = "logtail";
+my $VERSION = "0.1.1";
+
+use constant CONFDIR => "/etc/logtail";
 
 sub get_event_tags {
 
@@ -391,11 +396,11 @@ sub writeXMLStates {
 	
 	# set DTD <!DOCTYPE states SYSTEM "/etc/logtail/logtail-states.dtd" >
 	$dom->createInternalSubset("states", undef,
-	                           CONFDIR . "/states.dtd");
+	                           $runtime{confdir} . "/states.dtd");
 	
 	my $statesElement = $dom->createElement("states");
 	$dom->addChild($statesElement);
-
+	
 	
 	foreach my $logfile (keys %{$config{'logfiles'}}) {
 		$logger->debug("writing state for $logfile");
@@ -422,8 +427,44 @@ sub writeXMLStates {
 	}
 }
 
+sub Usage {
+	VERSION_MESSAGE();
+	HELP_MESSAGE();
+}
+
+sub VERSION_MESSAGE {
+	print <<ENDOFVERSION;
+
+$PROGRAM $VERSION, a log shipper to redis broker, using logstash JSON format
+(C) Remi Paulmier, Paris 2013.
+ENDOFVERSION
+}
+
+sub HELP_MESSAGE {
+	print <<ENDOFHELP;
+  
+$PROGRAM has following options:
+Usage: $PROGRAM [-d <config dir>]
+  -d <config dir>
+     Specify an alternate configuration dir
+
+ENDOFHELP
+}
+
 ###################### STARTUP ##########################
 
+my $opt = getopts("d:h",\%options);
+if ($opt == 0 || defined($options{h})) {
+	Usage();
+	exit 1;
+}
+
+if(defined $options{d}) {
+	$runtime{confdir} = $options{d};
+} else {
+	$runtime{confdir} = CONFDIR;
+}
+ 
 # logger init, always success
 my $logconf = q(
 log4perl.category.logtail		= ERROR, stderr
@@ -436,17 +477,17 @@ Log::Log4perl::init( \$logconf);
 $logger = Log::Log4perl::get_logger('logtail');
 
 # then,  tries to init log4perl from hardcoded conffile
-Log::Log4perl::init( CONFDIR . "/log4perl.conf") or 
+Log::Log4perl::init( $runtime{confdir} . "/log4perl.conf") or 
   $logger->logdie("can't read log4perl conf");
 
 # logger is OK, let's start !
 $logger->warn("logtail v0.1 starting");
 
 # read config
-readXMLConf(CONFDIR . "/config.xml");
+readXMLConf($runtime{confdir} . "/config.xml");
 
 initStates();
-readXMLStates(CONFDIR . "/states.xml");
+readXMLStates($runtime{confdir} . "/states.xml");
 
 # init hostname
 $runtime{hostname} = hostname;
@@ -523,7 +564,7 @@ while (! defined($runtime{shouldstop})) {
 	}
 
 	# write states
-	writeXMLStates(CONFDIR ."/states.xml");
+	writeXMLStates($runtime{confdir} ."/states.xml");
 }
 
 exit(0);
