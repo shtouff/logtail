@@ -4,6 +4,7 @@
 # read log files and inject messages into redis broker
 # messages are encoded into JSON, in the same way logstash does
 # This program needs inotify in linux kernel >= 2.6.13  
+# greetly inspired by iwatch
 
 use strict;
 use Event;
@@ -158,7 +159,7 @@ sub read_file {
 	my $logfile = shift;
 	my $buffer;
 	
-	# connaitre l'offset
+	# know the offset
 	my $off = $states{'logfiles'}{$logfile}{'offset'};
 	my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
 	    $atime,$mtime,$ctime,$blksize,$blocks)
@@ -184,12 +185,7 @@ sub read_file {
 		$logger->debug("NOTHING TO READ");
 	}
 	
-	# bulk send
-	
-	# XXX
-	# if message does not begin with ip address, drop it with WARN,
-	# since ES won't be able to index it due to strict mapping;
-	
+	# bulk send	
 	my @msgs = split /\n/, $buffer;
 	my @json_msgs = map {message2logstash_event($config{logfiles}
 	                                            {$logfile}{vhost},
@@ -238,7 +234,6 @@ sub watch_callback {
 	
 	if ($e->IN_DELETE_SELF) {
 		# this watched object has been removed
-		# si c'est pas un répertoire, veux-t-on le surveiller ? 
 		if (exists $config{'logfiles'}{$e->fullname}) {
 			$logger->debug("this file was supposed to be watched,"
 			               . " cancel it");
@@ -282,7 +277,7 @@ sub watch_callback {
 	}
 }
 
-# lit la conf depuis un fichier XML
+# read conf from XML file
 sub readXMLConf {
 	my ($configFile) = @_;
 	if(! -f $configFile) {
@@ -328,15 +323,9 @@ sub readXMLConf {
 	}
 }
 
-# initialize les states aux valeurs par défaut
+# init. states using default values
 sub initStates {
 	foreach my $logfile (keys %{$config{"logfiles"}}) {
-		
-		# IF BEGIN OR END
-		# BEGIN : $states{'logfiles'}{$logfile}{"inode"} = -1;
-		# $states{'logfiles'}{$logfile}{"offset"} = 0;
-		# END: depend si le fichier existe ou pas. S'il existe, on se cale 
-		# à la fin
 		my ($ino, $size);
 		
 		(undef,
@@ -354,7 +343,7 @@ sub initStates {
 	}
 }
 
-# lire les states depuis xml
+# read states from XML file
 sub readXMLStates {
 	
 	my ($statesFile) = @_;
@@ -391,15 +380,12 @@ sub readXMLStates {
 	}
 }
 
-# ecrire les states dans statefile.xml
+# write states into XML file
 sub writeXMLStates {
 
 	my ($statesFile) = @_;
 
 	$logger->debug("writing states to XML file");
-	
-	# pour chaque fichier surveillé répondant au pattern
-	# ecrire le nom du fichier et l'offset de la dernière lecture
 	
 	my $dom = XML::LibXML::Document->new('1.0');
 	
