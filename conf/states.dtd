@@ -6,30 +6,3 @@
   offset CDATA #REQUIRED
 >
 
-<!--
-<!ELEMENT config (guard,watchlist+)>
-<!ATTLIST config
-   charset CDATA "utf-8"
->
-<!ELEMENT guard (#PCDATA)>
-<!ATTLIST guard
-   email  CDATA #REQUIRED
-   name   CDATA #IMPLIED
->
-<!ELEMENT watchlist (title,contactpoint,path+)>
-<!ELEMENT title (#PCDATA)>
-<!ELEMENT contactpoint (#PCDATA)>
-<!ATTLIST contactpoint
-   email  CDATA #REQUIRED
-   name   CDATA #IMPLIED
->
-<!ELEMENT path (#PCDATA)>
-<!ATTLIST path
-   type   (single|recursive|exception|regexception) "single"
-   alert  (on|off) "off"
-   events CDATA          #IMPLIED
-   exec   CDATA          #IMPLIED
-   filter CDATA          #IMPLIED
-   syslog (on|off) "off"
->
--->
